@@ -75,6 +75,7 @@ fn parse_string(c: &mut ParseContext, v: &mut JsonValue) -> ParseState {
     }
     let new_bs = &bs[..idx+2];
     let s = String::from_utf8_lossy(new_bs);
+    let sr = s.to_string();
     return ParseState::PARSE_OK;
 }
 
