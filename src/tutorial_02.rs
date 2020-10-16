@@ -24,7 +24,6 @@
 //     t: JsonType,
 // }
 
-
 // If you try and create a recursive enum in Rust without using Box, you will get a compile time error saying that the enum can't be sized.
 //
 // This gives an error!
@@ -45,14 +44,10 @@ enum Json {
     NULL,
     TRUE,
     FALSE,
-    // NUMBER,
+    NUMBER(u32),
     STRING(String),
-    ARRAY(Box<Json>),
-    // OBJECT,
-}
-
-struct ParseContext<'a> {
-    json_bytes: &'a [u8],
+    ARRAY(Vec<Box<Json>>),
+    OBJECT(Box<Json>),
 }
 
 enum ParseState {
@@ -62,92 +57,140 @@ enum ParseState {
     RootNotSingular,
 }
 
-fn parse(v: &mut JsonValue, s: &String) -> ParseState {
+struct ParseContext<T: Iterator<Item = char>> {
+    ch: Option<char>,
+    restChars: T,
+    stack: Vec<Box<Json>>,
+}
+
+fn nextChar<T>(c: &mut ParseContext<T>)
+  where T: Iterator<Item = char>
+{
+  let ch = c.restChars.next();
+  match ch {
+    Some(x) => c.ch = Some(x),
+    None => c.ch = None,
+  }
+}
+
+fn parse(v: &mut Option<Json>, s: &String) -> ParseState {
     let mut context = ParseContext {
-        json_bytes: s.as_bytes(),
+        ch: None,
+        restChars: s.chars(),
+        stack: vec![],
     };
     parse_whitespace(&mut context);
     return parse_value(&mut context, v);
 }
 
-fn parse_whitespace(c: &mut ParseContext) {
-    let mut idx = 0;
-    let mut ch = c.json_bytes[idx];
-    while ch == b' ' || ch == b'\n' || ch == b'\t' || ch == b'\r' {
-        idx += 1;
-        ch = c.json_bytes[idx];
+fn parse_whitespace<T>(c: &mut ParseContext<T>)
+  where T: Iterator<Item = char>
+{
+    nextChar(c);
+    while matches!(c.ch, Some(' ')) ||
+          matches!(c.ch, Some('\n')) ||
+          matches!(c.ch, Some('\r')) ||
+          matches!(c.ch, Some('\t')) {
+          nextChar(c);
     }
-    c.json_bytes = &c.json_bytes[idx..];
 }
 
-fn parse_value(c: &mut ParseContext, v: &mut JsonValue) -> ParseState {
-    match c.json_bytes[0] {
-        b'n' => parse_literals(c, v, "null", JsonType::NULL),
-        b't' => parse_literals(c, v, "true", JsonType::TRUE),
-        b'f' => parse_literals(c, v, "false", JsonType::FALSE),
-        b'"' => parse_string(c, v),
-        b'\0' => ParseState::ExpectValue,
+fn parse_value<T>(c: &mut ParseContext<T>, v: &mut Option<Json>) -> ParseState
+  where T: Iterator<Item = char>
+{
+    match c.ch {
+        Some('n') => parse_literals(c, v, "null"),
+        Some('t') => parse_literals(c, v, "true"),
+        Some('f') => parse_literals(c, v, "false"),
+        Some('"') => parse_string(c, v),
+        None => ParseState::ExpectValue,
         _ => ParseState::InvalidValue,
     }
 }
 
-fn parse_literals(c: &mut ParseContext, v: &mut JsonValue, s: &str, t: JsonType) -> ParseState {
-    let bs = c.json_bytes;
-    let mut last_idx = 0;
-    for (i, &item) in s.as_bytes().iter().enumerate() {
-        if bs[i] != item {
-            return ParseState::InvalidValue;
+fn  parse_literals<T>(c: &mut ParseContext<T>, v: &mut Option<Json>, s: &str) -> ParseState
+  where T: Iterator<Item = char>
+{
+    let mut chars = s.chars();
+    while let Some(x) = chars.next() {
+      if let Some(y) = c.ch {
+        if x != y {
+          return ParseState::InvalidValue;
         }
-        last_idx = i;
+        nextChar(c)
+      } else {
+        return ParseState::InvalidValue;
+      }
     }
-    c.json_bytes = &bs[last_idx + 1..];
-    v.t = t;
+    *v = match s {
+        "null" => Some(Json::NULL),
+        "true" => Some(Json::TRUE),
+        "false" => Some(Json::FALSE),
+        _ => None,
+    };
     return ParseState::Ok;
 }
 
-fn parse_string(c: &mut ParseContext, v: &mut JsonValue) -> ParseState {
-    let bs = c.json_bytes;
-    assert!(bs[0] == b'"');
-    let mut idx = 1;
-    while bs[idx] != b'"' {
-        idx += 1;
+fn parse_string<T>(c: &mut ParseContext<T>, v: &mut Option<Json>) -> ParseState
+  where T: Iterator<Item = char>
+{
+    let mut s = String::new();
+    nextChar(c);
+    while let Some(x) = c.ch {
+      if x == '"' {break;}
+      s.push(x);
+      nextChar(c);
     }
-    let new_bs = &bs[..idx+2];
-    let s = String::from_utf8_lossy(new_bs);
-    let sr = s.to_string();
-    return ParseState::Ok;
+    if let None = c.ch {
+      return ParseState::InvalidValue;
+    } else {
+      *v = Some(Json::STRING(s));
+      return ParseState::Ok;
+    }
 }
 
-// fn parse_null(c: &mut ParseContext, v: &mut JsonValue) -> ParseState {
-//   let bs = c.json_bytes;
-//   if bs[0] != b'n' || bs[1] != b'u' || bs[2] != b'l' || bs[3] != b'l' {
-//     return ParseState::InvalidValue;
-//   } else {
-//     c.json_bytes = &c.json_bytes[4..];
-//     v.t = JsonType::NULL;
-//     return ParseState::Ok;
-//   }
+fn test_parse_ok(s: &str) {
+    let test_json = String::from(s);
+    let mut v: Option<Json> = None;
+    let state = parse(&mut v, &test_json);
+    assert!(matches!(state, ParseState::Ok));
+    match v {
+      Some(Json::STRING(x)) => println!("String: {}", x),
+      Some(Json::NULL) => println!("null"),
+      Some(Json::TRUE) => println!("true"),
+      Some(Json::FALSE) => println!("false"),
+      _ => println!("None"),
+    }
+}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     fn test_parse_ok(s: &str) {
+//         let test_json = String::from(s);
+//         let mut v: Option<Json> = None;
+//         let state = parse(&mut v, &test_json);
+//         assert!(matches!(state, ParseState::Ok));
+//         match v {
+//           Some(Json::STRING(s)) => println!("String: {}", s),
+//           Some(Json::NULL) => println!("null"),
+//           Some(Json::TRUE) => println!("true"),
+//           Some(Json::FALSE) => println!("false"),
+//           _ => println!("None"),
+//         }
+//     }
+
+//     #[test]
+//     fn test_parse_value() {
+//         test_parse_ok("null");
+//         test_parse_ok("true");
+//         test_parse_ok("false");
+//     }
 // }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_parse_ok(s: &str) {
-        let test_json = String::from(s);
-        let mut v = JsonValue { t: JsonType::NULL };
-        let state = parse(&mut v, &test_json);
-        assert!(matches!(state, ParseState::Ok));
-    }
-
-    #[test]
-    fn test_parse_value() {
-        test_parse_ok("null");
-        test_parse_ok("true");
-        test_parse_ok("false");
-    }
-}
-
 fn main() {
-
+    test_parse_ok("null");
+    test_parse_ok("true");
+    test_parse_ok("false");
+    test_parse_ok("\"hello world\"");
 }
